@@ -5,12 +5,16 @@ import html
 import logging
 import os
 import requests
+import time
 
 from bs4 import BeautifulSoup
+import eyed3
 import yaml
 
 
 ARTISTS_PAGE_URL = 'http://schedule.sxsw.com/2017/artists'
+DOWNLOAD_URL     = 'http://audio.sxsw.com/2017/mp3_by_artist_id/%s.mp3'
+
 
 # setup the logging mechanism
 logging.basicConfig(format='%(asctime)s %(message)s',
@@ -18,18 +22,18 @@ logging.basicConfig(format='%(asctime)s %(message)s',
                     level=logging.DEBUG)
 
 
-def get_artists_page(url, artists_file):
-    try:
+def get_artists_page(url, artists_file, redownload):
+    if os.path.isfile(artists_file) and not redownload:
         with open(artists_file, 'r') as f:
             logging.info('reading artists file')
             return f.read()
-    except FileNotFoundError:
+    else:
         logging.info('downloading artists file')
         r = requests.get(url)
         s = r.content.decode(r.encoding)
         with open(artists_file, 'w') as f:
             logging.info('saving artists file')
-            r.write(s)
+            f.write(s)
         return s
 
 
@@ -75,12 +79,55 @@ def scrape_artists_page(artists_page):
     return new_db
 
 
+def download_tracks(db, repo_dir):
+    if not os.path.isdir(repo_dir):
+        os.mkdir(repo_dir)
+
+    n_downloaded_tracks = 0
+    n_failed_downloads  = 0
+
+    try:
+        for track in db.keys():
+            if not db[track]['downloaded']:
+                track_url = DOWNLOAD_URL % track
+                logging.info('downloading %s' % track_url)
+                r = requests.get(track_url)
+                if r.ok:
+                    track_filename = os.path.join(repo_dir, '%s.mp3' % track)
+                    with open(track_filename, 'wb') as f:
+                        f.write(r.content)
+                    db[track]['downloaded'] = True
+                    n_downloaded_tracks += 1
+                    song = eyed3.load(track_filename)
+                    if song is not None:
+                        logging.info('Artist  : ' % song.tag.artist)
+                        logging.info('Title   : ' % song.tag.title)
+                        logging.info('Album   : ' % song.tag.album)
+                        logging.info('Genre   : ' % song.tag.genre)
+                else:
+                    logging.warn('download failed')
+                    n_failed_downloads += 1
+    except KeyboardInterrupt:
+        logging.warn('canceling downloads')
+
+    logging.info('downloaded tracks: %d' % n_downloaded_tracks)
+    logging.info('failed downloads:  %d' % n_failed_downloads)
+
+
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='SXSW music downloader')
+    parser.add_argument('--redownload-artists',
+                        action='store_true',
+                        help='redownload artists page even if cached')
+    args = parser.parse_args()
+
     project_dir = os.path.dirname(os.path.realpath(__file__))
     artists_file = os.path.join(project_dir, 'artists')
 
     # read cached artists page or download a new one
-    artists_page = get_artists_page(ARTISTS_PAGE_URL, artists_file)
+    artists_page = get_artists_page(ARTISTS_PAGE_URL,
+                                    artists_file,
+                                    args.redownload_artists)
 
     # load the database
     db_file = os.path.join(project_dir, 'trackdb.yaml')
@@ -92,7 +139,8 @@ if __name__ == '__main__':
     # update database
     new_db.update(db)
 
-    # TODO: download the new tracks
+    # download the new tracks
+    download_tracks(new_db, os.path.join(project_dir, 'songs'))
 
     # save the database for next time
     save_database(new_db, db_file)
