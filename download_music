@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+
+import argparse
+import html
+import logging
+import os
+import requests
+
+from bs4 import BeautifulSoup
+import yaml
+
+
+ARTISTS_PAGE_URL = 'http://schedule.sxsw.com/2017/artists'
+
+# setup the logging mechanism
+logging.basicConfig(format='%(asctime)s %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    level=logging.DEBUG)
+
+
+def get_artists_page(url, artists_file):
+    try:
+        with open(artists_file, 'r') as f:
+            logging.info('reading artists file')
+            return f.read()
+    except FileNotFoundError:
+        logging.info('downloading artists file')
+        r = requests.get(url)
+        s = r.content.decode(r.encoding)
+        with open(artists_file, 'w') as f:
+            logging.info('saving artists file')
+            r.write(s)
+        return s
+
+
+def load_database(db_file):
+    try:
+        with open(db_file, 'r') as f:
+            logging.info('loading track database')
+            return yaml.load(f.read())
+    except FileNotFoundError:
+        logging.info('no track database found')
+        return {}
+
+
+def save_database(db, db_file):
+    with open(db_file, 'w') as f:
+        f.write(yaml.dump(db))
+
+
+def scrape_artists_page(artists_page):
+    new_db = {}
+    soup = BeautifulSoup(artists_page, 'html.parser')
+
+    rows = soup.find_all('div', 'single-event')
+    for r in rows:
+        track_id = r.div.h4.a['href'].split('/')[3]
+        #logging.info('track ID: %s' % track_id)
+
+        if r.div.h4.a:
+            artist = r.div.h4.a.decode().split('>')[1].split('<')[0]
+            artist = html.unescape(artist)
+        else:
+            artist = ''
+
+        genre_a = r.find_all('div')[3].div.a
+        if genre_a:
+            genre = genre_a.decode().split('>')[1].split('<')[0]
+            genre = html.unescape(genre)
+        else:
+            genre = ''
+
+        new_db[track_id] = {'artist': artist, 'genre': genre, 'downloaded': False, 'released': False}
+
+    return new_db
+
+
+if __name__ == '__main__':
+    project_dir = os.path.dirname(os.path.realpath(__file__))
+    artists_file = os.path.join(project_dir, 'artists')
+
+    # read cached artists page or download a new one
+    artists_page = get_artists_page(ARTISTS_PAGE_URL, artists_file)
+
+    # load the database
+    db_file = os.path.join(project_dir, 'trackdb.yaml')
+    db = load_database(db_file)
+
+    # parse the artists page and pull out all the artists in it
+    new_db = scrape_artists_page(artists_page)
+
+    # update database
+    new_db.update(db)
+
+    # TODO: download the new tracks
+
+    # save the database for next time
+    save_database(new_db, db_file)
